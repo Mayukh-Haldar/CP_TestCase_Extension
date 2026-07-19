@@ -1,0 +1,172 @@
+{
+  "name": "cp-testcase-extension",
+  "displayName": "CP Testcase Extension",
+  "description": "Manage and run multiple competitive programming testcases from a sidebar.",
+  "version": "0.0.2",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:cpTestcases.sidebar",
+    "onCommand:cpTestcases.addTestCase",
+    "onCommand:cpTestcases.runAll",
+    "onCommand:cpTestcases.runSingle",
+    "onCommand:cpTestcases.refresh",
+    "onCommand:cpTestcases.deleteTestCase",
+    "onCommand:cpTestcases.openFile"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "cpTestcases",
+          "title": "CP Testcases",
+          "icon": "media/beaker.svg"
+        }
+      ]
+    },
+    "views": {
+      "cpTestcases": [
+        {
+          "id": "cpTestcases.sidebar",
+          "name": "Test Cases",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "cpTestcases.addTestCase",
+        "title": "CP Testcases: Add Test Case",
+        "icon": "$(add)"
+      },
+      {
+        "command": "cpTestcases.runAll",
+        "title": "CP Testcases: Run All Test Cases",
+        "icon": "$(run-all)"
+      },
+      {
+        "command": "cpTestcases.runSingle",
+        "title": "CP Testcases: Run Test Case"
+      },
+      {
+        "command": "cpTestcases.refresh",
+        "title": "CP Testcases: Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "cpTestcases.deleteTestCase",
+        "title": "CP Testcases: Delete Test Case"
+      },
+      {
+        "command": "cpTestcases.openFile",
+        "title": "CP Testcases: Open File"
+      },
+      {
+        "command": "cpTestcases.openHelp",
+        "title": "CP Testcases: Open Help"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "cpTestcases.addTestCase",
+          "when": "view == cpTestcases.sidebar",
+          "group": "navigation"
+        },
+        {
+          "command": "cpTestcases.runAll",
+          "when": "view == cpTestcases.sidebar",
+          "group": "navigation"
+        },
+        {
+          "command": "cpTestcases.refresh",
+          "when": "view == cpTestcases.sidebar",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "CP Testcases",
+      "properties": {
+        "cpTestcases.cppCompiler": {
+          "type": "string",
+          "default": "g++",
+          "description": "Compiler executable used to build C++ source files."
+        },
+        "cpTestcases.cppCompilerArgs": {
+          "type": "array",
+          "default": [
+            "-std=gnu++17",
+            "-O2"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Arguments passed to the C++ compiler before the source file."
+        },
+        "cpTestcases.cCompiler": {
+          "type": "string",
+          "default": "gcc",
+          "description": "Compiler executable used to build C source files."
+        },
+        "cpTestcases.cCompilerArgs": {
+          "type": "array",
+          "default": [
+            "-O2"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "description": "Arguments passed to the C compiler before the source file."
+        },
+        "cpTestcases.pythonCommand": {
+          "type": "string",
+          "default": "python",
+          "description": "Python command used to run Python source files."
+        },
+        "cpTestcases.javaCompiler": {
+          "type": "string",
+          "default": "javac",
+          "description": "Java compiler command used to build Java source files."
+        },
+        "cpTestcases.javaCompilerArgs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Arguments passed to javac before the source file."
+        },
+        "cpTestcases.javaCommand": {
+          "type": "string",
+          "default": "java",
+          "description": "Java runtime command used to run compiled Java classes."
+        },
+        "cpTestcases.sourceFile": {
+          "type": "string",
+          "default": "",
+          "description": "Optional relative path to the root source file. Leave empty to autodetect from the active editor or workspace."
+        },
+        "cpTestcases.testcasesFolder": {
+          "type": "string",
+          "default": ".cp-testcases",
+          "description": "Folder where testcase data is stored."
+        },
+        "cpTestcases.ignoreWhitespace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Treat outputs as equal when they only differ by whitespace."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "lint": "node -e \"console.log('No lint configured')\""
+  }
+}

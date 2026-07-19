@@ -1,0 +1,34 @@
+# Node / packaging
+node_modules/
+*.vsix
+*.tgz
+
+# Build / temp output
+dist/
+out/
+coverage/
+tmp/
+temp/
+
+# Extension dev artifacts
+.vscode-test/
+
+# Workspace testcase data
+.cp-testcases/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.*
+.agents/
+cp_repro*
