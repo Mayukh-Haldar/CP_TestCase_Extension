@@ -180,4 +180,5 @@ https://code.visualstudio.com/api/working-with-extensions/publishing-extension
 
 ## License
 
-Add your preferred license information here before publishing.
+This project is licensed under the MIT License.
+See the [LICENSE](LICENSE) file for details.
