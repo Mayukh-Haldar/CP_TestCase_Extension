@@ -4,6 +4,10 @@
   "description": "Manage and run multiple competitive programming testcases from a sidebar.",
   "version": "0.0.2",
   "publisher": "local",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Mayukh-Haldar/CP_TestCase_Extension.git"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
