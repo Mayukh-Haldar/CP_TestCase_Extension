@@ -35,7 +35,8 @@
         {
           "id": "cpTestcases.sidebar",
           "name": "Test Cases",
-          "type": "webview"
+          "type": "webview",
+          "icon": "media/beaker.svg"
         }
       ]
     },
