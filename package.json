@@ -2,8 +2,8 @@
   "name": "cp-testcase-extension",
   "displayName": "CP Testcase Extension",
   "description": "Manage and run multiple competitive programming testcases from a sidebar.",
-  "version": "0.0.2",
-  "publisher": "local",
+  "version": "0.0.3",
+  "publisher": "mayukhhaldar",
   "repository": {
     "type": "git",
     "url": "https://github.com/Mayukh-Haldar/CP_TestCase_Extension.git"
@@ -16,6 +16,8 @@
   ],
   "activationEvents": [
     "onView:cpTestcases.sidebar",
+    "onCommand:cpTestcases.createProblem",
+    "onCommand:cpTestcases.deleteProblem",
     "onCommand:cpTestcases.addTestCase",
     "onCommand:cpTestcases.runAll",
     "onCommand:cpTestcases.runSingle",
@@ -45,6 +47,16 @@
       ]
     },
     "commands": [
+      {
+        "command": "cpTestcases.createProblem",
+        "title": "CP Testcases: Create Problem",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "cpTestcases.deleteProblem",
+        "title": "CP Testcases: Delete Problem",
+        "icon": "$(trash)"
+      },
       {
         "command": "cpTestcases.addTestCase",
         "title": "CP Testcases: Add Test Case",
@@ -79,6 +91,11 @@
     ],
     "menus": {
       "view/title": [
+        {
+          "command": "cpTestcases.createProblem",
+          "when": "view == cpTestcases.sidebar",
+          "group": "navigation"
+        },
         {
           "command": "cpTestcases.addTestCase",
           "when": "view == cpTestcases.sidebar",
@@ -158,10 +175,51 @@
           "default": "",
           "description": "Optional relative path to the root source file. Leave empty to autodetect from the active editor or workspace."
         },
+        "cpTestcases.defaultLanguage": {
+          "type": "string",
+          "default": "cpp",
+          "enum": [
+            "cpp",
+            "c",
+            "python",
+            "java"
+          ],
+          "description": "Language used when CP Testcases creates a new problem source file automatically."
+        },
+        "cpTestcases.boilerplateCpp": {
+          "type": "string",
+          "default": "#include <bits/stdc++.h>\nusing namespace std;\n\nint main() {\n    ios::sync_with_stdio(false);\n    cin.tie(nullptr);\n\n    return 0;\n}\n",
+          "description": "Boilerplate used for new C++ problem files. Supported placeholders: {{problemName}}, {{className}}."
+        },
+        "cpTestcases.boilerplateC": {
+          "type": "string",
+          "default": "#include <stdio.h>\n\nint main(void) {\n    return 0;\n}\n",
+          "description": "Boilerplate used for new C problem files. Supported placeholders: {{problemName}}, {{className}}."
+        },
+        "cpTestcases.boilerplatePython": {
+          "type": "string",
+          "default": "def solve():\n    pass\n\n\nif __name__ == '__main__':\n    solve()\n",
+          "description": "Boilerplate used for new Python problem files. Supported placeholders: {{problemName}}, {{className}}."
+        },
+        "cpTestcases.boilerplateJava": {
+          "type": "string",
+          "default": "import java.io.*;\nimport java.util.*;\n\npublic class {{className}} {\n    public static void main(String[] args) throws Exception {\n    }\n}\n",
+          "description": "Boilerplate used for new Java problem files. Supported placeholders: {{problemName}}, {{className}}."
+        },
         "cpTestcases.testcasesFolder": {
           "type": "string",
           "default": ".cp-testcases",
           "description": "Folder where testcase data is stored."
+        },
+        "cpTestcases.competitiveCompanionEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Listen for Competitive Companion testcase imports on localhost."
+        },
+        "cpTestcases.competitiveCompanionPort": {
+          "type": "number",
+          "default": 27121,
+          "description": "Local port used for Competitive Companion imports."
         },
         "cpTestcases.ignoreWhitespace": {
           "type": "boolean",

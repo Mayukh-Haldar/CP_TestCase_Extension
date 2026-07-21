@@ -1,5 +1,6 @@
 const vscode = require('vscode');
 const fs = require('fs');
+const http = require('http');
 const path = require('path');
 const os = require('os');
 const cp = require('child_process');
@@ -9,7 +10,11 @@ const INPUT_FILE = 'input.txt';
 const EXPECTED_FILE = 'expected_output.txt';
 const OUTPUT_FILE = 'output.txt';
 const MAX_INLINE_FILE_BYTES = 256 * 1024;
+const COMPETITIVE_COMPANION_DEFAULT_PORT = 27121;
 let stderrChannel;
+let competitiveCompanionServer;
+let testcaseWatcher;
+let testcaseRefreshTimer;
 
 function activate(context) {
   stderrChannel = vscode.window.createOutputChannel('CP Testcases: stderr');
@@ -21,6 +26,8 @@ function activate(context) {
       webviewOptions: { retainContextWhenHidden: true }
     }),
     vscode.commands.registerCommand('cpTestcases.refresh', () => sidebar.refresh()),
+    vscode.commands.registerCommand('cpTestcases.createProblem', () => createProblem(sidebar)),
+    vscode.commands.registerCommand('cpTestcases.deleteProblem', () => deleteProblem(sidebar)),
     vscode.commands.registerCommand('cpTestcases.addTestCase', () => addTestCase(sidebar)),
     vscode.commands.registerCommand('cpTestcases.runAll', () => runAllTestCases(sidebar)),
     vscode.commands.registerCommand('cpTestcases.runSingle', (testcaseId) => runSingleTestCase(sidebar, testcaseId)),
@@ -28,20 +35,109 @@ function activate(context) {
     vscode.commands.registerCommand('cpTestcases.openFile', (payload) => openFileItem(payload)),
     vscode.commands.registerCommand('cpTestcases.openHelp', () => openHelp())
   );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidSaveTextDocument(async (document) => {
+      const boilerplateLanguage = getBoilerplateLanguageFromPath(document.uri.fsPath);
+      if (!boilerplateLanguage) {
+        return;
+      }
+
+      await saveBoilerplateSetting(boilerplateLanguage, document.getText());
+      sidebar.state.boilerplates = getBoilerplateState();
+      sidebar.postState();
+    }),
+    vscode.window.onDidChangeActiveTextEditor(() => {
+      scheduleSidebarRefresh(sidebar);
+    })
+  );
+
+  startCompetitiveCompanionServer(sidebar);
+  startTestcaseWatcher(sidebar, context);
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (
+        event.affectsConfiguration('cpTestcases.competitiveCompanionEnabled') ||
+        event.affectsConfiguration('cpTestcases.competitiveCompanionPort')
+      ) {
+        startCompetitiveCompanionServer(sidebar);
+      }
+
+      if (event.affectsConfiguration('cpTestcases.testcasesFolder')) {
+        startTestcaseWatcher(sidebar, context);
+      }
+    }),
+    new vscode.Disposable(() => stopCompetitiveCompanionServer()),
+    new vscode.Disposable(() => stopTestcaseWatcher())
+  );
 }
 
-function deactivate() {}
+function deactivate() {
+  stopCompetitiveCompanionServer();
+  stopTestcaseWatcher();
+}
+
+function startTestcaseWatcher(sidebar, context) {
+  stopTestcaseWatcher();
+
+  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  if (!workspaceFolder) {
+    return;
+  }
+
+  const folderName = vscode.workspace.getConfiguration('cpTestcases').get('testcasesFolder', '.cp-testcases');
+  const pattern = new vscode.RelativePattern(workspaceFolder, `${folderName}/**`);
+  testcaseWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+  const schedule = () => scheduleSidebarRefresh(sidebar);
+  testcaseWatcher.onDidCreate(schedule, null, context.subscriptions);
+  testcaseWatcher.onDidDelete(schedule, null, context.subscriptions);
+  testcaseWatcher.onDidChange((uri) => {
+    if (path.basename(uri.fsPath).toLowerCase() === TESTCASE_META) {
+      schedule();
+    }
+  }, null, context.subscriptions);
+}
+
+function stopTestcaseWatcher() {
+  if (testcaseRefreshTimer) {
+    clearTimeout(testcaseRefreshTimer);
+    testcaseRefreshTimer = undefined;
+  }
+
+  if (!testcaseWatcher) {
+    return;
+  }
+
+  testcaseWatcher.dispose();
+  testcaseWatcher = undefined;
+}
+
+function scheduleSidebarRefresh(sidebar) {
+  if (testcaseRefreshTimer) {
+    clearTimeout(testcaseRefreshTimer);
+  }
+
+  testcaseRefreshTimer = setTimeout(async () => {
+    testcaseRefreshTimer = undefined;
+    await sidebar.refresh();
+  }, 150);
+}
 
 class TestcaseSidebarProvider {
   constructor(context) {
     this.context = context;
     this.webviewView = undefined;
+    this.activeProblemName = undefined;
     this.state = {
       testcases: [],
       summary: { total: 0, passed: 0, failed: 0 },
+      problemName: 'No active problem',
       workspaceName: getWorkspaceName(),
       hasWorkspace: Boolean(vscode.workspace.workspaceFolders?.length),
-      focusTarget: null
+      focusTarget: null,
+      boilerplates: getBoilerplateState()
     };
     this.statusById = new Map();
     this.busy = false;
@@ -66,6 +162,16 @@ class TestcaseSidebarProvider {
 
     if (message.type === 'addTestcase') {
       await vscode.commands.executeCommand('cpTestcases.addTestCase');
+      return;
+    }
+
+    if (message.type === 'createProblem') {
+      await vscode.commands.executeCommand('cpTestcases.createProblem');
+      return;
+    }
+
+    if (message.type === 'deleteProblem') {
+      await vscode.commands.executeCommand('cpTestcases.deleteProblem');
       return;
     }
 
@@ -112,14 +218,45 @@ class TestcaseSidebarProvider {
       return;
     }
 
+    if (message.type === 'saveBoilerplate') {
+      await saveBoilerplateSetting(message.language, message.content || '');
+      this.state.boilerplates = getBoilerplateState();
+      return;
+    }
+
+    if (message.type === 'saveDefaultLanguage') {
+      await saveDefaultLanguageSetting(message.language);
+      this.state.boilerplates = getBoilerplateState();
+      this.postState();
+      return;
+    }
+
+    if (message.type === 'openSettings') {
+      await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:mayukhhaldar.cp-testcase-extension CP Testcases');
+      return;
+    }
+
+    if (message.type === 'openBoilerplateFile') {
+      await openBoilerplateFile(message.language);
+      return;
+    }
+
     if (message.type === 'help') {
       await vscode.commands.executeCommand('cpTestcases.openHelp');
     }
   }
 
   async refresh() {
+    const headerInfo = await getSidebarHeaderInfo();
+    const nextProblemName = headerInfo.problemName || 'No active problem';
+    if (this.activeProblemName && this.activeProblemName !== nextProblemName) {
+      this.statusById.clear();
+    }
+    this.activeProblemName = nextProblemName;
+    this.state.problemName = headerInfo.problemName;
     this.state.workspaceName = getWorkspaceName();
     this.state.hasWorkspace = Boolean(vscode.workspace.workspaceFolders?.length);
+    this.state.boilerplates = getBoilerplateState();
     if (this.state.hasWorkspace) {
       this.state.testcases = await getTestcasesForUi(this.statusById);
       this.state.summary = buildSummary(this.state.testcases);
@@ -608,6 +745,68 @@ class TestcaseSidebarProvider {
       color: #ffb3bc;
     }
 
+    .template-panel {
+      border-radius: var(--radius);
+      padding: 12px;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02)),
+        rgba(20, 22, 25, 0.95);
+      border: 1px solid var(--panel-border);
+      box-shadow: var(--shadow);
+    }
+
+    .template-grid {
+      display: grid;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .template-meta {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: 1fr;
+    }
+
+    .template-select {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(6, 10, 14, 0.78);
+      color: #f3f7fb;
+      padding: 10px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    .template-tabs {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .tab-btn {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: #dbe6f2;
+      padding: 9px 8px;
+      font-size: 12px;
+    }
+
+    .tab-btn.active {
+      background: linear-gradient(135deg, #4d9df8, #3278cb);
+      box-shadow: 0 8px 18px rgba(61, 132, 216, 0.2);
+    }
+
+    .template-editor {
+      min-height: 180px;
+    }
+
+    .template-note {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
     .footer-space {
       height: 10px;
     }
@@ -664,6 +863,10 @@ class TestcaseSidebarProvider {
         padding: 9px;
       }
 
+      .template-tabs {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
       textarea, pre.output {
         min-height: 68px;
       }
@@ -677,19 +880,31 @@ class TestcaseSidebarProvider {
     let state = {
       testcases: [],
       summary: { total: 0, passed: 0, failed: 0 },
+      problemName: 'No active problem',
       workspaceName: 'Workspace',
       hasWorkspace: true,
-      busy: false
+      busy: false,
+      boilerplates: { defaultLanguage: 'cpp', templates: {} }
     };
     const saveTimers = new Map();
     const testcaseContent = new Map();
     const openTestcases = new Set();
     const MAX_INLINE_EDITOR_CHARS = 200000;
+    let activeTemplateLanguage = 'cpp';
+    let renderedProblemName = state.problemName;
 
     window.addEventListener('message', (event) => {
       const message = event.data;
       if (message.type === 'state') {
+        const nextProblemName = message.payload?.problemName || 'No active problem';
+        if (renderedProblemName !== nextProblemName) {
+          testcaseContent.clear();
+          openTestcases.clear();
+          saveTimers.forEach((timer) => clearTimeout(timer));
+          saveTimers.clear();
+        }
         state = message.payload;
+        renderedProblemName = nextProblemName;
         render();
         applyRequestedFocus();
         return;
@@ -724,6 +939,10 @@ class TestcaseSidebarProvider {
     function render() {
       const app = document.getElementById('app');
       const passedText = state.summary.total ? state.summary.passed + ' / ' + state.summary.total + ' passed' : 'No runs yet';
+      const availableLanguages = ['cpp', 'c', 'python', 'java'];
+      if (!availableLanguages.includes(activeTemplateLanguage)) {
+        activeTemplateLanguage = state.boilerplates?.defaultLanguage || 'cpp';
+      }
 
       app.innerHTML = \`
         <div class="shell">
@@ -731,8 +950,8 @@ class TestcaseSidebarProvider {
             <div class="eyebrow">CP Judge Dashboard</div>
             <div class="hero-row">
               <div>
-                <div class="workspace">\${escapeHtml(state.workspaceName)}</div>
-                <div class="subtle">Build once, edit quickly, and judge every testcase from one place.</div>
+                <div class="workspace">\${escapeHtml(state.problemName || 'No active problem')}</div>
+                <div class="subtle">\${escapeHtml(state.workspaceName)} • Build once, edit quickly, and judge every testcase from one place.</div>
               </div>
               <div class="score"><strong>\${state.summary.passed}</strong>\${escapeHtml(passedText)}</div>
             </div>
@@ -740,8 +959,14 @@ class TestcaseSidebarProvider {
               <button class="btn-primary" data-action="add" \${state.busy ? 'disabled' : ''}>＋ New Testcase</button>
               <button class="btn-secondary" data-action="runAll" \${state.busy ? 'disabled' : ''}>▶ Run All</button>
             </div>
+            <div class="hero-actions" style="margin-top:10px;">
+              <button class="btn-ghost" data-action="createProblem">Create Problem</button>
+              <button class="btn-ghost" data-action="deleteProblem">Delete Problem</button>
+            </div>
             <div class="hint">Tip: collapse cards anytime and keep only the testcase you are working on open.</div>
           </section>
+
+          \${renderBoilerplatePanel()}
 
           <div id="inline-message"></div>
           <div class="stack">
@@ -754,6 +979,7 @@ class TestcaseSidebarProvider {
       bindGlobalActions();
       bindCaseActions();
       bindDetailsToggles();
+      bindBoilerplateActions();
     }
 
     function applyRequestedFocus() {
@@ -844,6 +1070,79 @@ class TestcaseSidebarProvider {
       }
 
       return state.testcases.map(renderCard).join('');
+    }
+
+    function renderBoilerplatePanel() {
+      const boilerplates = state.boilerplates || { defaultLanguage: 'cpp', templates: {} };
+      const templates = boilerplates.templates || {};
+      const currentLanguage = activeTemplateLanguage || boilerplates.defaultLanguage || 'cpp';
+      const currentTemplate = templates[currentLanguage] || '';
+
+      return \`
+        <section class="template-panel">
+          <div class="field-head" style="margin-bottom:0;">
+            <div class="field-label">Boilerplates</div>
+            <div class="field-actions">
+              <button class="mini" data-action="openSettings">Settings</button>
+            </div>
+          </div>
+          <div class="template-grid">
+            <div class="template-meta">
+              <div>
+                <div class="field-label" style="margin-bottom:6px;">Default Language</div>
+                <select class="template-select" data-boilerplate-default>
+                  \${renderLanguageOption('cpp', 'C++', boilerplates.defaultLanguage)}
+                  \${renderLanguageOption('c', 'C', boilerplates.defaultLanguage)}
+                  \${renderLanguageOption('python', 'Python', boilerplates.defaultLanguage)}
+                  \${renderLanguageOption('java', 'Java', boilerplates.defaultLanguage)}
+                </select>
+              </div>
+              <div class="template-tabs">
+                \${renderTemplateTab('cpp', 'C++')}
+                \${renderTemplateTab('c', 'C')}
+                \${renderTemplateTab('python', 'Python')}
+                \${renderTemplateTab('java', 'Java')}
+              </div>
+            </div>
+            <div class="field" style="padding:10px;">
+              <div class="field-head">
+                <div class="field-label">\${escapeHtml(renderLanguageTitle(currentLanguage))} Template</div>
+                <div class="field-actions">
+                  <button class="mini" data-boilerplate-open="\${escapeAttr(currentLanguage)}">Open</button>
+                  <span class="mini">Autosaves</span>
+                </div>
+              </div>
+              <textarea class="template-editor" data-boilerplate-editor="\${escapeAttr(currentLanguage)}" spellcheck="false">\${escapeHtml(currentTemplate)}</textarea>
+            </div>
+            <div class="template-note">Supported placeholders: <code>{{problemName}}</code> and <code>{{className}}</code>. Java uses <code>{{className}}</code> for the generated public class name.</div>
+          </div>
+        </section>
+      \`;
+    }
+
+    function renderLanguageOption(value, label, selectedValue) {
+      return '<option value="' + escapeAttr(value) + '"' + (value === selectedValue ? ' selected' : '') + '>' + escapeHtml(label) + '</option>';
+    }
+
+    function renderTemplateTab(language, label) {
+      const isActive = activeTemplateLanguage === language;
+      return '<button class="tab-btn' + (isActive ? ' active' : '') + '" data-boilerplate-tab="' + escapeAttr(language) + '">' + escapeHtml(label) + '</button>';
+    }
+
+    function renderLanguageTitle(language) {
+      if (language === 'cpp') {
+        return 'C++';
+      }
+      if (language === 'c') {
+        return 'C';
+      }
+      if (language === 'python') {
+        return 'Python';
+      }
+      if (language === 'java') {
+        return 'Java';
+      }
+      return language;
     }
 
     function renderCard(testcase) {
@@ -955,12 +1254,69 @@ class TestcaseSidebarProvider {
         button.onclick = () => send('addTestcase');
       });
 
+      document.querySelectorAll('[data-action="createProblem"]').forEach((button) => {
+        button.onclick = () => send('createProblem');
+      });
+
+      document.querySelectorAll('[data-action="deleteProblem"]').forEach((button) => {
+        button.onclick = () => send('deleteProblem');
+      });
+
       document.querySelectorAll('[data-action="runAll"]').forEach((button) => {
         button.onclick = () => send('runAll');
       });
 
       document.querySelectorAll('[data-action="help"]').forEach((button) => {
         button.onclick = () => send('help');
+      });
+
+      document.querySelectorAll('[data-action="openSettings"]').forEach((button) => {
+        button.onclick = () => send('openSettings');
+      });
+    }
+
+    function bindBoilerplateActions() {
+      document.querySelectorAll('[data-boilerplate-tab]').forEach((button) => {
+        button.onclick = (event) => {
+          event.preventDefault();
+          activeTemplateLanguage = button.dataset.boilerplateTab;
+          render();
+        };
+      });
+
+      document.querySelectorAll('[data-boilerplate-default]').forEach((select) => {
+        select.onchange = () => {
+          send('saveDefaultLanguage', { language: select.value });
+        };
+      });
+
+      document.querySelectorAll('textarea[data-boilerplate-editor]').forEach((editor) => {
+        editor.addEventListener('input', () => {
+          const language = editor.dataset.boilerplateEditor;
+          if (!language) {
+            return;
+          }
+
+          const key = 'boilerplate|' + language;
+          if (saveTimers.has(key)) {
+            clearTimeout(saveTimers.get(key));
+          }
+
+          saveTimers.set(
+            key,
+            setTimeout(() => {
+              send('saveBoilerplate', { language, content: editor.value });
+              saveTimers.delete(key);
+            }, 300)
+          );
+        });
+      });
+
+      document.querySelectorAll('[data-boilerplate-open]').forEach((button) => {
+        button.onclick = (event) => {
+          event.preventDefault();
+          send('openBoilerplateFile', { language: button.dataset.boilerplateOpen });
+        };
       });
     }
 
@@ -1097,8 +1453,8 @@ async function addTestCase(sidebar) {
     return;
   }
 
-  const root = getWorkspaceRoot();
-  const folder = getTestcasesRoot();
+  const problemContext = await resolveProblemContext();
+  const folder = problemContext.testcasesRoot;
   await fs.promises.mkdir(folder, { recursive: true });
 
   const slug = toSlug(name);
@@ -1117,6 +1473,23 @@ async function addTestCase(sidebar) {
   sidebar.resetTestcaseContent(slug);
   sidebar.setStatus(slug, 'idle');
   sidebar.requestFocus(slug, INPUT_FILE);
+  await sidebar.refresh();
+}
+
+async function createProblem(sidebar) {
+  let problemContext;
+  try {
+    problemContext = await resolveProblemContext({
+      allowWorkspaceScan: false,
+      allowInteractivePick: false
+    });
+  } catch {
+    problemContext = await createProblemContextInteractively();
+  }
+  if (!problemContext) {
+    return;
+  }
+  await fs.promises.mkdir(problemContext.testcasesRoot, { recursive: true });
   await sidebar.refresh();
 }
 
@@ -1200,6 +1573,186 @@ async function deleteTestCase(sidebar, testcaseId) {
   await sidebar.refresh();
 }
 
+async function deleteProblem(sidebar) {
+  const problemContext = await resolveProblemContext();
+  const exists = fs.existsSync(problemContext.testcasesRoot);
+  if (!exists) {
+    vscode.window.showWarningMessage(`No testcase folder exists yet for problem "${problemContext.problemName}".`);
+    return;
+  }
+
+  const choice = await vscode.window.showWarningMessage(
+    `Delete the entire problem folder "${problemContext.problemName}" and all its testcases?`,
+    { modal: true },
+    'Delete Problem'
+  );
+
+  if (choice !== 'Delete Problem') {
+    return;
+  }
+
+  const testcases = await readAllTestcases();
+  for (const testcase of testcases) {
+    sidebar.statusById.delete(testcase.id);
+    sidebar.resetTestcaseContent(testcase.id);
+  }
+
+  await fs.promises.rm(problemContext.testcasesRoot, { recursive: true, force: true });
+  await sidebar.refresh();
+}
+
+function startCompetitiveCompanionServer(sidebar) {
+  stopCompetitiveCompanionServer();
+
+  const config = vscode.workspace.getConfiguration('cpTestcases');
+  const enabled = config.get('competitiveCompanionEnabled', true);
+  if (!enabled) {
+    return;
+  }
+
+  const port = Number(config.get('competitiveCompanionPort', COMPETITIVE_COMPANION_DEFAULT_PORT)) || COMPETITIVE_COMPANION_DEFAULT_PORT;
+  competitiveCompanionServer = http.createServer((request, response) => {
+    handleCompetitiveCompanionRequest(request, response, sidebar).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      showStderrOutput('Competitive Companion import failed', message);
+      if (!response.headersSent) {
+        response.writeHead(500, {
+          'Access-Control-Allow-Origin': '*',
+          'Content-Type': 'application/json; charset=utf-8'
+        });
+      }
+      response.end(JSON.stringify({ success: false, error: message }));
+    });
+  });
+
+  competitiveCompanionServer.on('error', (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    logNonCritical(`Competitive Companion listener could not start on port ${port}: ${message}`);
+  });
+
+  competitiveCompanionServer.listen(port, '127.0.0.1', () => {
+    logNonCritical(`Competitive Companion listener ready on http://127.0.0.1:${port}`);
+  });
+}
+
+function stopCompetitiveCompanionServer() {
+  if (!competitiveCompanionServer) {
+    return;
+  }
+
+  competitiveCompanionServer.close();
+  competitiveCompanionServer = undefined;
+}
+
+async function handleCompetitiveCompanionRequest(request, response, sidebar) {
+  response.setHeader('Access-Control-Allow-Origin', '*');
+  response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  response.setHeader('Access-Control-Allow-Methods', 'OPTIONS, POST');
+
+  if (request.method === 'OPTIONS') {
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
+  if (request.method !== 'POST') {
+    response.writeHead(405, { 'Content-Type': 'application/json; charset=utf-8' });
+    response.end(JSON.stringify({ success: false, error: 'Only POST is supported.' }));
+    return;
+  }
+
+  const payload = await readJsonBody(request);
+  const result = await importCompetitiveCompanionPayload(payload, sidebar);
+  response.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+  response.end(JSON.stringify({ success: true, ...result }));
+}
+
+function readJsonBody(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let totalBytes = 0;
+    const limitBytes = 10 * 1024 * 1024;
+
+    request.on('data', (chunk) => {
+      totalBytes += chunk.length;
+      if (totalBytes > limitBytes) {
+        reject(new Error('Incoming Competitive Companion payload is too large.'));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    request.on('end', () => {
+      try {
+        const raw = Buffer.concat(chunks).toString('utf8').trim();
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch (error) {
+        reject(new Error('Could not parse Competitive Companion payload as JSON.'));
+      }
+    });
+
+    request.on('error', reject);
+  });
+}
+
+async function importCompetitiveCompanionPayload(payload, sidebar) {
+  const rawName = payload?.name || payload?.problem || payload?.title || 'problem';
+  const problemName = toProblemSlug(rawName);
+  const tests = Array.isArray(payload?.tests) ? payload.tests : [];
+
+  if (!tests.length) {
+    throw new Error('Competitive Companion payload did not include any testcases.');
+  }
+
+  const source = await ensureProblemSourceFile(problemName, undefined, false);
+
+  const problemRoot = path.join(getTestcasesRoot(), problemName);
+  await fs.promises.mkdir(getTestcasesRoot(), { recursive: true });
+  await fs.promises.rm(problemRoot, { recursive: true, force: true });
+  await fs.promises.mkdir(problemRoot, { recursive: true });
+  let firstTestcaseId;
+
+  for (let index = 0; index < tests.length; index += 1) {
+    const test = tests[index] || {};
+    const testcaseName = `sample_${index + 1}`;
+    const testcaseId = toSlug(testcaseName);
+    firstTestcaseId ||= testcaseId;
+    const testcaseDir = path.join(problemRoot, testcaseId);
+    await fs.promises.mkdir(testcaseDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(testcaseDir, TESTCASE_META),
+      JSON.stringify(
+        {
+          name: testcaseName,
+          importedFrom: 'competitive-companion',
+          problem: rawName,
+          index: index + 1,
+          url: payload?.url || ''
+        },
+        null,
+        2
+      )
+    );
+    await fs.promises.writeFile(path.join(testcaseDir, INPUT_FILE), String(test.input || ''));
+    await fs.promises.writeFile(path.join(testcaseDir, EXPECTED_FILE), String(test.output || ''));
+    await fs.promises.writeFile(path.join(testcaseDir, OUTPUT_FILE), '');
+  }
+
+  sidebar.statusById.clear();
+  if (firstTestcaseId) {
+    sidebar.requestFocus(firstTestcaseId, INPUT_FILE);
+  }
+  await sidebar.refresh();
+  await revealSidebarAndSourceFile(source.filePath);
+  logNonCritical(`Imported ${tests.length} testcase(s) for "${rawName}" into .cp-testcases/${problemName}.`);
+
+  return {
+    problemName,
+    imported: tests.length
+  };
+}
+
 async function openFileItem(payload) {
   const filePath = await resolveTestcaseFilePath(payload?.testcaseId, payload?.fileName);
   if (!filePath) {
@@ -1207,6 +1760,13 @@ async function openFileItem(payload) {
   }
 
   await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(filePath));
+}
+
+async function revealSidebarAndSourceFile(filePath) {
+  await vscode.commands.executeCommand('workbench.view.extension.cpTestcases');
+  await vscode.commands.executeCommand('cpTestcases.sidebar.focus');
+  const document = await vscode.workspace.openTextDocument(filePath);
+  await vscode.window.showTextDocument(document, { preview: false });
 }
 
 async function copyTestcaseFile(testcaseId, fileName, content) {
@@ -1336,7 +1896,16 @@ async function resolveTestcaseFilePath(testcaseId, fileName) {
 }
 
 async function readAllTestcases() {
-  const folder = getTestcasesRoot();
+  let problemContext;
+  try {
+    problemContext = await resolveProblemContext({
+      allowWorkspaceScan: true,
+      allowInteractivePick: false
+    });
+  } catch {
+    return [];
+  }
+  const folder = problemContext.testcasesRoot;
   if (!fs.existsSync(folder)) {
     return [];
   }
@@ -1365,7 +1934,8 @@ async function readAllTestcases() {
     results.push({
       id: entry.name,
       name,
-      dir: testcaseDir
+      dir: testcaseDir,
+      problemName: problemContext.problemName
     });
   }
 
@@ -1448,11 +2018,11 @@ function normalizeWhitespace(value) {
   return value.replace(/\s+/g, ' ').trim();
 }
 
-async function resolveSourceFile() {
-  const configured = vscode.workspace.getConfiguration('cpTestcases').get('sourceFile', '').trim();
-  if (configured) {
-    return toSourceDescriptor(path.join(getWorkspaceRoot(), configured));
-  }
+async function resolveSourceFile(options = {}) {
+  const {
+    allowWorkspaceScan = true,
+    allowInteractivePick = true
+  } = options;
 
   const activePath = vscode.window.activeTextEditor?.document?.uri?.fsPath;
   if (activePath) {
@@ -1462,12 +2032,21 @@ async function resolveSourceFile() {
     }
   }
 
+  const configured = vscode.workspace.getConfiguration('cpTestcases').get('sourceFile', '').trim();
+  if (configured) {
+    return toSourceDescriptor(path.join(getWorkspaceRoot(), configured));
+  }
+
+  if (!allowWorkspaceScan) {
+    return undefined;
+  }
+
   const files = await vscode.workspace.findFiles('**/*.{cpp,cc,cxx,c,py,java}', '**/node_modules/**', 50);
   if (files.length === 1) {
     return toSourceDescriptor(files[0].fsPath);
   }
 
-  if (files.length > 1) {
+  if (files.length > 1 && allowInteractivePick) {
     const picked = await vscode.window.showQuickPick(
       files.map((file) => ({
         label: path.relative(getWorkspaceRoot(), file.fsPath),
@@ -1480,6 +2059,63 @@ async function resolveSourceFile() {
   }
 
   return undefined;
+}
+
+async function resolveProblemContext(options = {}) {
+  const source = await resolveSourceFile(options);
+  if (!source) {
+    throw new Error('No supported source file found. Open or configure a .cpp, .c, .py, or .java file.');
+  }
+
+  const problemName = path.basename(source.filePath, path.extname(source.filePath));
+  return {
+    source,
+    problemName,
+    testcasesRoot: path.join(getTestcasesRoot(), problemName)
+  };
+}
+
+async function getSidebarHeaderInfo() {
+  try {
+    const problemContext = await resolveProblemContext({
+      allowWorkspaceScan: true,
+      allowInteractivePick: false
+    });
+    return {
+      problemName: problemContext.problemName
+    };
+  } catch {
+    return {
+      problemName: 'No active problem'
+    };
+  }
+}
+
+async function createProblemContextInteractively() {
+  const language = await promptForLanguage();
+  if (!language) {
+    return undefined;
+  }
+
+  const problemNameInput = await vscode.window.showInputBox({
+    prompt: 'Enter a problem name',
+    placeHolder: 'Example: super_ships',
+    validateInput(value) {
+      return value.trim() ? null : 'Problem name is required.';
+    }
+  });
+
+  if (!problemNameInput) {
+    return undefined;
+  }
+
+  const problemName = toProblemSlug(problemNameInput);
+  const source = await ensureProblemSourceFile(problemName, language, true);
+  return {
+    source,
+    problemName,
+    testcasesRoot: path.join(getTestcasesRoot(), problemName)
+  };
 }
 
 function getWorkspaceRoot() {
@@ -1499,12 +2135,236 @@ function getTestcasesRoot() {
   return path.join(getWorkspaceRoot(), folderName);
 }
 
+function getBoilerplateFolder() {
+  return path.join(getTestcasesRoot(), '_boilerplates');
+}
+
+function getBoilerplateFileName(language) {
+  if (language === 'cpp') {
+    return 'cpp.template.txt';
+  }
+  if (language === 'c') {
+    return 'c.template.txt';
+  }
+  if (language === 'python') {
+    return 'python.template.txt';
+  }
+  if (language === 'java') {
+    return 'java.template.txt';
+  }
+  return 'template.txt';
+}
+
+function getBoilerplateFilePath(language) {
+  return path.join(getBoilerplateFolder(), getBoilerplateFileName(language));
+}
+
+function getBoilerplateLanguageFromPath(filePath) {
+  const normalized = path.normalize(filePath);
+  const boilerplateFolder = path.normalize(getBoilerplateFolder()) + path.sep;
+  if (!normalized.startsWith(boilerplateFolder)) {
+    return undefined;
+  }
+
+  const fileName = path.basename(normalized).toLowerCase();
+  if (fileName === 'cpp.template.txt') {
+    return 'cpp';
+  }
+  if (fileName === 'c.template.txt') {
+    return 'c';
+  }
+  if (fileName === 'python.template.txt') {
+    return 'python';
+  }
+  if (fileName === 'java.template.txt') {
+    return 'java';
+  }
+  return undefined;
+}
+
+function getBoilerplateState() {
+  const config = vscode.workspace.getConfiguration('cpTestcases');
+  return {
+    defaultLanguage: config.get('defaultLanguage', 'cpp'),
+    templates: {
+      cpp: config.get('boilerplateCpp', ''),
+      c: config.get('boilerplateC', ''),
+      python: config.get('boilerplatePython', ''),
+      java: config.get('boilerplateJava', '')
+    }
+  };
+}
+
+async function saveBoilerplateSetting(language, content) {
+  const key = getBoilerplateConfigKey(language);
+  await vscode.workspace.getConfiguration('cpTestcases').update(key, content, vscode.ConfigurationTarget.Workspace);
+}
+
+async function saveDefaultLanguageSetting(language) {
+  const supported = new Set(['cpp', 'c', 'python', 'java']);
+  if (!supported.has(language)) {
+    return;
+  }
+
+  await vscode.workspace
+    .getConfiguration('cpTestcases')
+    .update('defaultLanguage', language, vscode.ConfigurationTarget.Workspace);
+}
+
+async function ensureBoilerplateFile(language) {
+  const supported = new Set(['cpp', 'c', 'python', 'java']);
+  if (!supported.has(language)) {
+    throw new Error(`Unsupported boilerplate language "${language}".`);
+  }
+
+  const filePath = getBoilerplateFilePath(language);
+  await fs.promises.mkdir(getBoilerplateFolder(), { recursive: true });
+
+  const config = vscode.workspace.getConfiguration('cpTestcases');
+  const key = getBoilerplateConfigKey(language);
+  const currentValue = String(config.get(key, ''));
+
+  if (!fs.existsSync(filePath)) {
+    await fs.promises.writeFile(filePath, currentValue);
+    return filePath;
+  }
+
+  const openDocument = vscode.workspace.textDocuments.find(
+    (document) => path.normalize(document.uri.fsPath) === path.normalize(filePath)
+  );
+  if (openDocument?.isDirty) {
+    return filePath;
+  }
+
+  const existingValue = await fs.promises.readFile(filePath, 'utf8');
+  if (existingValue !== currentValue) {
+    await fs.promises.writeFile(filePath, currentValue);
+  }
+
+  return filePath;
+}
+
+async function openBoilerplateFile(language) {
+  const filePath = await ensureBoilerplateFile(language);
+  const document = await vscode.workspace.openTextDocument(filePath);
+  await vscode.window.showTextDocument(document, { preview: false });
+}
+
+function getLanguageExtension(language) {
+  if (language === 'cpp') {
+    return '.cpp';
+  }
+  if (language === 'c') {
+    return '.c';
+  }
+  if (language === 'python') {
+    return '.py';
+  }
+  if (language === 'java') {
+    return '.java';
+  }
+  return '.cpp';
+}
+
+function getBoilerplateConfigKey(language) {
+  if (language === 'cpp') {
+    return 'boilerplateCpp';
+  }
+  if (language === 'c') {
+    return 'boilerplateC';
+  }
+  if (language === 'python') {
+    return 'boilerplatePython';
+  }
+  if (language === 'java') {
+    return 'boilerplateJava';
+  }
+  return 'boilerplateCpp';
+}
+
 function toSlug(name) {
   return name
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9-_ ]/g, '')
     .replace(/\s+/g, '-');
+}
+
+function toProblemSlug(name) {
+  return String(name || 'problem')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-_ ]/g, '')
+    .replace(/\s+/g, '_') || 'problem';
+}
+
+function renderBoilerplate(language, problemName) {
+  const config = vscode.workspace.getConfiguration('cpTestcases');
+  const key = getBoilerplateConfigKey(language);
+  const template = config.get(key, '');
+  const className = language === 'java' ? String(problemName || 'Main') : problemName;
+
+  return String(template || '')
+    .replace(/\{\{problemName\}\}/g, problemName)
+    .replace(/\{\{className\}\}/g, className);
+}
+
+async function promptForLanguage() {
+  const config = vscode.workspace.getConfiguration('cpTestcases');
+  const defaultLanguage = config.get('defaultLanguage', 'cpp');
+  const options = [
+    { label: 'C++', description: '.cpp', language: 'cpp' },
+    { label: 'C', description: '.c', language: 'c' },
+    { label: 'Python', description: '.py', language: 'python' },
+    { label: 'Java', description: '.java', language: 'java' }
+  ];
+
+  const ordered = [
+    ...options.filter((option) => option.language === defaultLanguage),
+    ...options.filter((option) => option.language !== defaultLanguage)
+  ];
+
+  const picked = await vscode.window.showQuickPick(ordered, {
+    placeHolder: `Choose the language for the new problem (${defaultLanguage} is your default)`
+  });
+
+  return picked?.language;
+}
+
+async function ensureProblemSourceFile(problemName, preferredLanguage, openEditor) {
+  const workspaceRoot = getWorkspaceRoot();
+  const supportedExtensions = ['.cpp', '.c', '.py', '.java'];
+
+  for (const extension of supportedExtensions) {
+    const existingPath = path.join(workspaceRoot, `${problemName}${extension}`);
+    if (fs.existsSync(existingPath)) {
+      if (openEditor) {
+        await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(existingPath));
+      }
+      const existingSource = toSourceDescriptor(existingPath);
+      if (!existingSource) {
+        throw new Error(`Unsupported source file found at ${existingPath}.`);
+      }
+      return existingSource;
+    }
+  }
+
+  const language = preferredLanguage || vscode.workspace.getConfiguration('cpTestcases').get('defaultLanguage', 'cpp');
+  const extension = getLanguageExtension(language);
+  const filePath = path.join(workspaceRoot, `${problemName}${extension}`);
+  const content = renderBoilerplate(language, problemName);
+  await fs.promises.writeFile(filePath, content, { flag: 'wx' });
+
+  if (openEditor) {
+    const document = await vscode.workspace.openTextDocument(filePath);
+    await vscode.window.showTextDocument(document, { preview: false });
+  }
+
+  const source = toSourceDescriptor(filePath);
+  if (!source) {
+    throw new Error(`Could not create a supported source file for language "${language}".`);
+  }
+  return source;
 }
 
 async function readFileOrEmpty(filePath) {
