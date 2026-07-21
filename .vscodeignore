@@ -1,0 +1,9 @@
+.vscode/**
+.git/**
+.gitignore
+.agents/**
+cp_repro.cpp
+cp_repro14.exe
+*.vsix
+DEVELOPMENT.md
+CHANGELOG.md
