@@ -6,6 +6,17 @@ The format is based on Keep a Changelog, and version entries should match the ex
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-07-21
+
+### Changed
+
+- Updated the online judge toggle so local `C` and `C++` builds define `ONLINE_JUDGE`, matching judge-style compilation more closely.
+
+### Fixed
+
+- Improved Windows stack-flag initialization so both workspace `C` and `C++` compiler args are seeded correctly for GCC-like compilers.
+- Added more reliable workspace-settings initialization paths for compiler stack flags, including a direct `.vscode/settings.json` fallback when VS Code does not materialize the workspace value.
+
 ## [0.0.4] - 2026-07-21
 
 ### Added

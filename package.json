@@ -2,7 +2,7 @@
   "name": "cp-testcase-extension",
   "displayName": "CP Testcase Extension",
   "description": "Manage and run multiple competitive programming testcases from a sidebar.",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "publisher": "mayukhhaldar",
   "repository": {
     "type": "git",
@@ -15,6 +15,7 @@
     "Other"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onView:cpTestcases.sidebar",
     "onCommand:cpTestcases.createProblem",
     "onCommand:cpTestcases.deleteProblem",
@@ -130,7 +131,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Arguments passed to the C++ compiler before the source file. On Windows, CP Testcases also auto-adds a larger stack linker flag for GCC-like compilers unless you already provide one."
+          "description": "Arguments passed to the C++ compiler before the source file. On Windows, CP Testcases initializes workspace args with a larger stack linker flag for GCC-like compilers unless you already provide one."
         },
         "cpTestcases.cCompiler": {
           "type": "string",
@@ -145,7 +146,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Arguments passed to the C compiler before the source file. On Windows, CP Testcases also auto-adds a larger stack linker flag for GCC-like compilers unless you already provide one."
+          "description": "Arguments passed to the C compiler before the source file. On Windows, CP Testcases initializes workspace args with a larger stack linker flag for GCC-like compilers unless you already provide one."
         },
         "cpTestcases.pythonCommand": {
           "type": "string",

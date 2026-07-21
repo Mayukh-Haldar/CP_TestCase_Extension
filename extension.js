@@ -20,6 +20,7 @@ let testcaseRefreshTimer;
 function activate(context) {
   stderrChannel = vscode.window.createOutputChannel('CP Testcases: stderr');
   const sidebar = new TestcaseSidebarProvider(context);
+  scheduleWorkspaceCompilerStackFlagInitialization();
 
   context.subscriptions.push(
     stderrChannel,
@@ -67,6 +68,17 @@ function activate(context) {
 
       if (event.affectsConfiguration('cpTestcases.testcasesFolder')) {
         startTestcaseWatcher(sidebar, context);
+      }
+
+      if (
+        event.affectsConfiguration('cpTestcases.cppCompiler') ||
+        event.affectsConfiguration('cpTestcases.cppCompilerArgs') ||
+        event.affectsConfiguration('cpTestcases.cCompiler') ||
+        event.affectsConfiguration('cpTestcases.cCompilerArgs')
+      ) {
+        ensureWorkspaceCompilerStackFlags().catch((error) => {
+          logNonCritical(`Could not refresh workspace compiler stack flags: ${error instanceof Error ? error.message : String(error)}`);
+        });
       }
 
       if (
@@ -131,6 +143,79 @@ function stopTestcaseWatcher() {
   testcaseWatcher = undefined;
 }
 
+function scheduleWorkspaceCompilerStackFlagInitialization() {
+  ensureWorkspaceCompilerStackFlags().catch((error) => {
+    logNonCritical(`Could not initialize workspace compiler stack flags: ${error instanceof Error ? error.message : String(error)}`);
+  });
+
+  setTimeout(() => {
+    ensureWorkspaceCompilerStackFlags().catch((error) => {
+      logNonCritical(`Could not initialize workspace compiler stack flags: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  }, 1000);
+}
+
+async function ensureWorkspaceCompilerStackFlags() {
+  if (process.platform !== 'win32' || !vscode.workspace.workspaceFolders?.length) {
+    return;
+  }
+
+  await ensureWorkspaceStackFlagForLanguage({
+    compilerKey: 'cppCompiler',
+    argsKey: 'cppCompilerArgs',
+    defaultCompiler: 'g++',
+    defaultArgs: ['-std=gnu++17', '-O2']
+  });
+
+  await ensureWorkspaceStackFlagForLanguage({
+    compilerKey: 'cCompiler',
+    argsKey: 'cCompilerArgs',
+    defaultCompiler: 'gcc',
+    defaultArgs: ['-O2']
+  });
+}
+
+async function ensureWorkspaceStackFlagForLanguage(options) {
+  const config = vscode.workspace.getConfiguration('cpTestcases');
+  const compiler = config.get(options.compilerKey, options.defaultCompiler);
+  const inspectedArgs = config.inspect(options.argsKey);
+  const workspaceArgs = Array.isArray(inspectedArgs?.workspaceValue) ? [...inspectedArgs.workspaceValue] : undefined;
+  const userArgs = Array.isArray(inspectedArgs?.globalValue) ? [...inspectedArgs.globalValue] : undefined;
+  const defaultArgs = Array.isArray(inspectedArgs?.defaultValue) ? [...inspectedArgs.defaultValue] : [...options.defaultArgs];
+  const baseArgs = workspaceArgs || userArgs || defaultArgs;
+
+  if (!shouldAddWindowsStackFlag(compiler, baseArgs)) {
+    return;
+  }
+
+  const nextArgs = [...baseArgs, WINDOWS_STACK_LINKER_FLAG];
+  await config.update(options.argsKey, nextArgs, vscode.ConfigurationTarget.Workspace);
+
+  const refreshedArgs = config.inspect(options.argsKey);
+  if (!Array.isArray(refreshedArgs?.workspaceValue)) {
+    await writeWorkspaceArraySetting(`cpTestcases.${options.argsKey}`, nextArgs);
+  }
+}
+
+async function writeWorkspaceArraySetting(settingKey, value) {
+  const settingsDir = path.join(getWorkspaceRoot(), '.vscode');
+  const settingsPath = path.join(settingsDir, 'settings.json');
+  await fs.promises.mkdir(settingsDir, { recursive: true });
+
+  let settings = {};
+  if (fs.existsSync(settingsPath)) {
+    const raw = await fs.promises.readFile(settingsPath, 'utf8');
+    try {
+      settings = raw.trim() ? JSON.parse(raw) : {};
+    } catch {
+      return;
+    }
+  }
+
+  settings[settingKey] = value;
+  await fs.promises.writeFile(settingsPath, `${JSON.stringify(settings, null, 4)}\n`);
+}
+
 function scheduleSidebarRefresh(sidebar) {
   if (testcaseRefreshTimer) {
     clearTimeout(testcaseRefreshTimer);
@@ -167,6 +252,7 @@ class TestcaseSidebarProvider {
       enableScripts: true
     };
 
+    scheduleWorkspaceCompilerStackFlagInitialization();
     webviewView.webview.html = this.getHtml(webviewView.webview);
     webviewView.webview.onDidReceiveMessage((message) => this.handleMessage(message));
 

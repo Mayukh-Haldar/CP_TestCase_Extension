@@ -205,7 +205,7 @@ The extension contributes the following commands:
 - `cpTestcases.cppCompilerArgs`
 - `cpTestcases.boilerplateCpp`
 
-On Windows, CP Testcases automatically appends `-Wl,--stack,536870912` for GCC-like native compilers unless your configured compiler args already include a `--stack` linker option. This helps deep-recursion solutions avoid the default small stack.
+On Windows, CP Testcases initializes workspace `C++` compiler args with `-Wl,--stack,536870912` for GCC-like native compilers unless your configured args already include a `--stack` linker option. This helps deep-recursion solutions avoid the default small stack.
 
 ### C
 
@@ -242,7 +242,7 @@ Development, VSIX packaging, and publishing instructions are documented in `DEVE
 ## Notes
 
 - Very large files are intentionally file-backed rather than fully inline.
-- On Windows with GCC/MinGW, native `C` and `C++` builds get a larger default stack unless you override it in your compiler args.
+- On Windows with GCC/MinGW, CP Testcases initializes workspace `C` and `C++` compiler args with a larger stack flag unless you already override it.
 - On older Windows MinGW setups, the extension includes compatibility handling for known `C++17` header issues.
 - Compile and runtime errors are written to the `CP Testcases: stderr` output channel.
 
