@@ -11,6 +11,7 @@ const EXPECTED_FILE = 'expected_output.txt';
 const OUTPUT_FILE = 'output.txt';
 const MAX_INLINE_FILE_BYTES = 256 * 1024;
 const COMPETITIVE_COMPANION_DEFAULT_PORT = 27121;
+const WINDOWS_STACK_LINKER_FLAG = '-Wl,--stack,536870912';
 let stderrChannel;
 let competitiveCompanionServer;
 let testcaseWatcher;
@@ -66,6 +67,22 @@ function activate(context) {
 
       if (event.affectsConfiguration('cpTestcases.testcasesFolder')) {
         startTestcaseWatcher(sidebar, context);
+      }
+
+      if (
+        event.affectsConfiguration('cpTestcases.defaultLanguage') ||
+        event.affectsConfiguration('cpTestcases.onlineJudge') ||
+        event.affectsConfiguration('cpTestcases.boilerplateCpp') ||
+        event.affectsConfiguration('cpTestcases.boilerplateC') ||
+        event.affectsConfiguration('cpTestcases.boilerplatePython') ||
+        event.affectsConfiguration('cpTestcases.boilerplateJava')
+      ) {
+        if (sidebar.skipNextBoilerplateConfigRefresh) {
+          sidebar.skipNextBoilerplateConfigRefresh = false;
+          return;
+        }
+        sidebar.state.boilerplates = getBoilerplateState();
+        sidebar.postState();
       }
     }),
     new vscode.Disposable(() => stopCompetitiveCompanionServer()),
@@ -130,6 +147,7 @@ class TestcaseSidebarProvider {
     this.context = context;
     this.webviewView = undefined;
     this.activeProblemName = undefined;
+    this.skipNextBoilerplateConfigRefresh = false;
     this.state = {
       testcases: [],
       summary: { total: 0, passed: 0, failed: 0 },
@@ -219,15 +237,24 @@ class TestcaseSidebarProvider {
     }
 
     if (message.type === 'saveBoilerplate') {
+      this.skipNextBoilerplateConfigRefresh = true;
       await saveBoilerplateSetting(message.language, message.content || '');
       this.state.boilerplates = getBoilerplateState();
       return;
     }
 
     if (message.type === 'saveDefaultLanguage') {
+      this.skipNextBoilerplateConfigRefresh = true;
       await saveDefaultLanguageSetting(message.language);
       this.state.boilerplates = getBoilerplateState();
       this.postState();
+      return;
+    }
+
+    if (message.type === 'saveOnlineJudge') {
+      this.skipNextBoilerplateConfigRefresh = true;
+      await saveOnlineJudgeSetting(Boolean(message.value));
+      this.state.boilerplates = getBoilerplateState();
       return;
     }
 
@@ -753,6 +780,61 @@ class TestcaseSidebarProvider {
         rgba(20, 22, 25, 0.95);
       border: 1px solid var(--panel-border);
       box-shadow: var(--shadow);
+      margin-top: 16px;
+    }
+
+    .template-panel.collapsed {
+      padding-bottom: 10px;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 0;
+    }
+
+    .panel-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .panel-toggle {
+      width: 30px;
+      height: 30px;
+      border-radius: 10px;
+      padding: 0;
+      background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
+      border: 1px solid rgba(255,255,255,0.08);
+      display: grid;
+      place-items: center;
+      color: #dbe6f2;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+    }
+
+    .panel-toggle::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-right: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: rotate(45deg) translateY(-1px);
+      transition: transform 140ms ease;
+      display: block;
+    }
+
+    .panel-toggle.collapsed::before {
+      transform: rotate(-45deg) translateX(-1px);
+    }
+
+    .panel-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
     }
 
     .template-grid {
@@ -768,14 +850,44 @@ class TestcaseSidebarProvider {
     }
 
     .template-select {
+      appearance: none;
       width: 100%;
-      border-radius: 12px;
-      border: 1px solid rgba(255,255,255,0.08);
-      background: rgba(6, 10, 14, 0.78);
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.1);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02)),
+        rgba(7, 11, 15, 0.92);
       color: #f3f7fb;
-      padding: 10px;
+      padding: 12px 42px 12px 14px;
       font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
       outline: none;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+      transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    }
+
+    .template-select:focus {
+      border-color: rgba(87,166,255,0.78);
+      box-shadow: 0 0 0 1px rgba(87,166,255,0.34), inset 0 1px 0 rgba(255,255,255,0.05);
+    }
+
+    .select-wrap {
+      position: relative;
+    }
+
+    .select-wrap::after {
+      content: "";
+      position: absolute;
+      right: 16px;
+      top: 50%;
+      width: 9px;
+      height: 9px;
+      border-right: 2px solid rgba(219,230,242,0.9);
+      border-bottom: 2px solid rgba(219,230,242,0.9);
+      transform: translateY(-65%) rotate(45deg);
+      pointer-events: none;
+      opacity: 0.92;
     }
 
     .template-tabs {
@@ -805,6 +917,43 @@ class TestcaseSidebarProvider {
       font-size: 11px;
       color: var(--muted);
       line-height: 1.45;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(6, 10, 14, 0.5);
+    }
+
+    .checkbox-row input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: #4d9df8;
+      margin: 0;
+      flex: 0 0 auto;
+    }
+
+    .checkbox-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .checkbox-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #f3f7fb;
+    }
+
+    .checkbox-hint {
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.4;
     }
 
     .footer-space {
@@ -890,7 +1039,9 @@ class TestcaseSidebarProvider {
     const testcaseContent = new Map();
     const openTestcases = new Set();
     const MAX_INLINE_EDITOR_CHARS = 200000;
+    const persistedUiState = vscode.getState() || {};
     let activeTemplateLanguage = 'cpp';
+    let boilerplateCollapsed = Boolean(persistedUiState.boilerplateCollapsed);
     let renderedProblemName = state.problemName;
 
     window.addEventListener('message', (event) => {
@@ -934,6 +1085,13 @@ class TestcaseSidebarProvider {
 
     function send(type, payload = {}) {
       vscode.postMessage({ type, ...payload });
+    }
+
+    function persistUiState() {
+      vscode.setState({
+        ...persistedUiState,
+        boilerplateCollapsed
+      });
     }
 
     function render() {
@@ -1077,25 +1235,43 @@ class TestcaseSidebarProvider {
       const templates = boilerplates.templates || {};
       const currentLanguage = activeTemplateLanguage || boilerplates.defaultLanguage || 'cpp';
       const currentTemplate = templates[currentLanguage] || '';
+      const onlineJudge = Boolean(boilerplates.onlineJudge);
 
       return \`
-        <section class="template-panel">
-          <div class="field-head" style="margin-bottom:0;">
-            <div class="field-label">Boilerplates</div>
-            <div class="field-actions">
+        <section class="template-panel \${boilerplateCollapsed ? 'collapsed' : ''}">
+          <div class="panel-header">
+            <div class="panel-title">
+              <button class="panel-toggle \${boilerplateCollapsed ? 'collapsed' : ''}" data-action="toggleBoilerplates" aria-label="\${boilerplateCollapsed ? 'Show boilerplates' : 'Hide boilerplates'}"></button>
+              <div class="field-label">Boilerplates</div>
+            </div>
+            <div class="panel-actions">
               <button class="mini" data-action="openSettings">Settings</button>
+              <button class="mini" data-action="toggleBoilerplates">\${boilerplateCollapsed ? 'Show' : 'Hide'}</button>
             </div>
           </div>
+          \${boilerplateCollapsed ? '' : \`
           <div class="template-grid">
             <div class="template-meta">
               <div>
                 <div class="field-label" style="margin-bottom:6px;">Default Language</div>
-                <select class="template-select" data-boilerplate-default>
-                  \${renderLanguageOption('cpp', 'C++', boilerplates.defaultLanguage)}
-                  \${renderLanguageOption('c', 'C', boilerplates.defaultLanguage)}
-                  \${renderLanguageOption('python', 'Python', boilerplates.defaultLanguage)}
-                  \${renderLanguageOption('java', 'Java', boilerplates.defaultLanguage)}
-                </select>
+                <div class="select-wrap">
+                  <select class="template-select" data-boilerplate-default>
+                    \${renderLanguageOption('cpp', 'C++', boilerplates.defaultLanguage)}
+                    \${renderLanguageOption('c', 'C', boilerplates.defaultLanguage)}
+                    \${renderLanguageOption('python', 'Python', boilerplates.defaultLanguage)}
+                    \${renderLanguageOption('java', 'Java', boilerplates.defaultLanguage)}
+                  </select>
+                </div>
+              </div>
+              <div>
+                <div class="field-label" style="margin-bottom:6px;">Online Judge</div>
+                <label class="checkbox-row">
+                  <input type="checkbox" data-online-judge \${onlineJudge ? 'checked' : ''} />
+                  <span class="checkbox-copy">
+                    <span class="checkbox-title">Set as online judge</span>
+                    <span class="checkbox-hint">Local C and C++ builds will define <code>ONLINE_JUDGE</code>, like judge-style compilation.</span>
+                  </span>
+                </label>
               </div>
               <div class="template-tabs">
                 \${renderTemplateTab('cpp', 'C++')}
@@ -1116,6 +1292,7 @@ class TestcaseSidebarProvider {
             </div>
             <div class="template-note">Supported placeholders: <code>{{problemName}}</code> and <code>{{className}}</code>. Java uses <code>{{className}}</code> for the generated public class name.</div>
           </div>
+          \`}
         </section>
       \`;
     }
@@ -1273,6 +1450,15 @@ class TestcaseSidebarProvider {
       document.querySelectorAll('[data-action="openSettings"]').forEach((button) => {
         button.onclick = () => send('openSettings');
       });
+
+      document.querySelectorAll('[data-action="toggleBoilerplates"]').forEach((button) => {
+        button.onclick = (event) => {
+          event.preventDefault();
+          boilerplateCollapsed = !boilerplateCollapsed;
+          persistUiState();
+          render();
+        };
+      });
     }
 
     function bindBoilerplateActions() {
@@ -1290,12 +1476,40 @@ class TestcaseSidebarProvider {
         };
       });
 
+      document.querySelectorAll('[data-online-judge]').forEach((input) => {
+        input.addEventListener('change', () => {
+          state = {
+            ...state,
+            boilerplates: {
+              ...(state.boilerplates || { defaultLanguage: 'cpp', onlineJudge: false, templates: {} }),
+              onlineJudge: input.checked,
+              templates: {
+                ...((state.boilerplates && state.boilerplates.templates) || {})
+              }
+            }
+          };
+
+          send('saveOnlineJudge', { value: input.checked });
+        });
+      });
+
       document.querySelectorAll('textarea[data-boilerplate-editor]').forEach((editor) => {
         editor.addEventListener('input', () => {
           const language = editor.dataset.boilerplateEditor;
           if (!language) {
             return;
           }
+
+          state = {
+            ...state,
+            boilerplates: {
+              ...(state.boilerplates || { defaultLanguage: 'cpp', templates: {} }),
+              templates: {
+                ...((state.boilerplates && state.boilerplates.templates) || {}),
+                [language]: editor.value
+              }
+            }
+          };
 
           const key = 'boilerplate|' + language;
           if (saveTimers.has(key)) {
@@ -1581,13 +1795,18 @@ async function deleteProblem(sidebar) {
     return;
   }
 
+  const sourcePath = problemContext.source?.filePath;
+  const sourceLabel = sourcePath ? path.basename(sourcePath) : '';
   const choice = await vscode.window.showWarningMessage(
-    `Delete the entire problem folder "${problemContext.problemName}" and all its testcases?`,
+    sourcePath
+      ? `Delete the entire problem folder "${problemContext.problemName}" and all its testcases? You can also remove the source file "${sourceLabel}".`
+      : `Delete the entire problem folder "${problemContext.problemName}" and all its testcases?`,
     { modal: true },
-    'Delete Problem'
+    'Delete Problem Only',
+    ...(sourcePath ? ['Delete Problem + Source File'] : [])
   );
 
-  if (choice !== 'Delete Problem') {
+  if (!choice) {
     return;
   }
 
@@ -1598,6 +1817,9 @@ async function deleteProblem(sidebar) {
   }
 
   await fs.promises.rm(problemContext.testcasesRoot, { recursive: true, force: true });
+  if (choice === 'Delete Problem + Source File' && sourcePath && fs.existsSync(sourcePath)) {
+    await fs.promises.rm(sourcePath, { force: true });
+  }
   await sidebar.refresh();
 }
 
@@ -2186,6 +2408,7 @@ function getBoilerplateState() {
   const config = vscode.workspace.getConfiguration('cpTestcases');
   return {
     defaultLanguage: config.get('defaultLanguage', 'cpp'),
+    onlineJudge: config.get('onlineJudge', false),
     templates: {
       cpp: config.get('boilerplateCpp', ''),
       c: config.get('boilerplateC', ''),
@@ -2209,6 +2432,12 @@ async function saveDefaultLanguageSetting(language) {
   await vscode.workspace
     .getConfiguration('cpTestcases')
     .update('defaultLanguage', language, vscode.ConfigurationTarget.Workspace);
+}
+
+async function saveOnlineJudgeSetting(value) {
+  await vscode.workspace
+    .getConfiguration('cpTestcases')
+    .update('onlineJudge', Boolean(value), vscode.ConfigurationTarget.Workspace);
 }
 
 async function ensureBoilerplateFile(language) {
@@ -2490,7 +2719,8 @@ async function buildJavaRunner(source) {
 
 async function buildNativeRunner(source, options) {
   const compiler = vscode.workspace.getConfiguration('cpTestcases').get(options.compilerConfigKey, options.defaultCompiler);
-  const compilerArgs = vscode.workspace.getConfiguration('cpTestcases').get(options.argsConfigKey, options.defaultArgs);
+  const configuredCompilerArgs = vscode.workspace.getConfiguration('cpTestcases').get(options.argsConfigKey, options.defaultArgs);
+  const compilerArgs = getEffectiveNativeCompilerArgs(compiler, configuredCompilerArgs);
   const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'cp-testcases-'));
   const exePath = path.join(tempDir, process.platform === 'win32' ? 'program.exe' : 'program');
   const compileSource = toCompilerPath(source.filePath);
@@ -2603,6 +2833,60 @@ function swapToGnuCpp14(compilerArgs) {
     }
     return arg;
   });
+}
+
+function getEffectiveNativeCompilerArgs(compiler, configuredArgs) {
+  const compilerArgs = Array.isArray(configuredArgs) ? [...configuredArgs] : [];
+  const effectiveArgs = maybeAddOnlineJudgeDefine(compilerArgs);
+  if (!shouldAddWindowsStackFlag(compiler, effectiveArgs)) {
+    return effectiveArgs;
+  }
+
+  return [...effectiveArgs, WINDOWS_STACK_LINKER_FLAG];
+}
+
+function maybeAddOnlineJudgeDefine(compilerArgs) {
+  const onlineJudge = vscode.workspace.getConfiguration('cpTestcases').get('onlineJudge', false);
+  if (!onlineJudge) {
+    return compilerArgs;
+  }
+
+  const hasOnlineJudgeDefine = compilerArgs.some((arg) => {
+    if (typeof arg !== 'string') {
+      return false;
+    }
+
+    return arg === '-DONLINE_JUDGE' || arg === '/DONLINE_JUDGE' || /(?:^|[= ])ONLINE_JUDGE(?:$|[= ])/.test(arg);
+  });
+
+  if (hasOnlineJudgeDefine) {
+    return compilerArgs;
+  }
+
+  return [...compilerArgs, '-DONLINE_JUDGE'];
+}
+
+function shouldAddWindowsStackFlag(compiler, compilerArgs) {
+  if (process.platform !== 'win32') {
+    return false;
+  }
+
+  const compilerName = path.basename(String(compiler || '')).toLowerCase();
+  const isGnuLikeCompiler =
+    compilerName === 'g++' ||
+    compilerName === 'g++.exe' ||
+    compilerName === 'gcc' ||
+    compilerName === 'gcc.exe' ||
+    compilerName === 'c++' ||
+    compilerName === 'c++.exe' ||
+    compilerName === 'cc' ||
+    compilerName === 'cc.exe';
+
+  if (!isGnuLikeCompiler) {
+    return false;
+  }
+
+  return !compilerArgs.some((arg) => typeof arg === 'string' && arg.includes('--stack'));
 }
 
 async function withProgress(title, sidebar, task) {

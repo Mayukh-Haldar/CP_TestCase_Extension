@@ -131,6 +131,7 @@ The sidebar includes a boilerplate section for `C++`, `C`, `Python`, and `Java`.
 You can:
 
 - change the default language
+- toggle whether the workspace is set as online judge
 - edit each language template inline
 - open a template as a file
 - keep boilerplate synced with workspace settings
@@ -192,6 +193,7 @@ The extension contributes the following commands:
 
 - `cpTestcases.sourceFile`
 - `cpTestcases.defaultLanguage`
+- `cpTestcases.onlineJudge`
 - `cpTestcases.testcasesFolder`
 - `cpTestcases.competitiveCompanionEnabled`
 - `cpTestcases.competitiveCompanionPort`
@@ -202,6 +204,8 @@ The extension contributes the following commands:
 - `cpTestcases.cppCompiler`
 - `cpTestcases.cppCompilerArgs`
 - `cpTestcases.boilerplateCpp`
+
+On Windows, CP Testcases automatically appends `-Wl,--stack,536870912` for GCC-like native compilers unless your configured compiler args already include a `--stack` linker option. This helps deep-recursion solutions avoid the default small stack.
 
 ### C
 
@@ -238,6 +242,7 @@ Development, VSIX packaging, and publishing instructions are documented in `DEVE
 ## Notes
 
 - Very large files are intentionally file-backed rather than fully inline.
+- On Windows with GCC/MinGW, native `C` and `C++` builds get a larger default stack unless you override it in your compiler args.
 - On older Windows MinGW setups, the extension includes compatibility handling for known `C++17` header issues.
 - Compile and runtime errors are written to the `CP Testcases: stderr` output channel.
 

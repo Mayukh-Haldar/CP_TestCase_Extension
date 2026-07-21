@@ -130,7 +130,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Arguments passed to the C++ compiler before the source file."
+          "description": "Arguments passed to the C++ compiler before the source file. On Windows, CP Testcases also auto-adds a larger stack linker flag for GCC-like compilers unless you already provide one."
         },
         "cpTestcases.cCompiler": {
           "type": "string",
@@ -145,7 +145,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Arguments passed to the C compiler before the source file."
+          "description": "Arguments passed to the C compiler before the source file. On Windows, CP Testcases also auto-adds a larger stack linker flag for GCC-like compilers unless you already provide one."
         },
         "cpTestcases.pythonCommand": {
           "type": "string",
@@ -185,6 +185,11 @@
             "java"
           ],
           "description": "Language used when CP Testcases creates a new problem source file automatically."
+        },
+        "cpTestcases.onlineJudge": {
+          "type": "boolean",
+          "default": false,
+          "description": "Marks this workspace as an online judge style setup, similar to the checkbox workflow in CPH."
         },
         "cpTestcases.boilerplateCpp": {
           "type": "string",

@@ -6,6 +6,15 @@ The format is based on Keep a Changelog, and version entries should match the ex
 
 ## [Unreleased]
 
+### Added
+
+- Added a workspace-level online judge checkbox in the boilerplate panel and settings, similar to the quick toggle workflow in CPH.
+- Added a delete-problem confirmation option to remove the active source file along with the testcase folder when needed.
+
+### Fixed
+
+- Increased the default stack for Windows GCC-like `C` and `C++` builds to reduce recursion-depth runtime crashes, while still letting explicit user compiler args override it.
+
 ## [0.0.3] - 2026-07-21
 
 ### Added
