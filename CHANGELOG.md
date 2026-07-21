@@ -6,6 +6,8 @@ The format is based on Keep a Changelog, and version entries should match the ex
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-07-21
+
 ### Added
 
 - Added a workspace-level online judge checkbox in the boilerplate panel and settings, similar to the quick toggle workflow in CPH.

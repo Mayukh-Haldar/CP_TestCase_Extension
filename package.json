@@ -2,7 +2,7 @@
   "name": "cp-testcase-extension",
   "displayName": "CP Testcase Extension",
   "description": "Manage and run multiple competitive programming testcases from a sidebar.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "mayukhhaldar",
   "repository": {
     "type": "git",
